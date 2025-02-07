@@ -1,8 +1,28 @@
+'''Port driver for EtherTalk over UDP using Basilisk II's udptunnel option.'''
+
 import socket, select, logging
 from threading import Thread, Event
 from . import EtherTalkPort
 
 class B2UdpTunnelPort(EtherTalkPort):
+  '''Port driver for EtherTalk over UDP using Basilisk II's udptunnel option.
+  
+  intf_address:
+    IPv4 address to listen on (tries to pick a sensible default if omitted).
+    The hw_addr will be based on this, with b'B2' added to the beginning.
+    This cannot be overridden - it's how B2 finds us when sending frames.
+  udp_port:
+    The UDP port to send/receive on (default 6066).
+    Must match the udpport option in Basilisk II's configuration.
+  remap_addresses_hack:
+    Basilisk II finds the IPv4 address it uses to build its MAC address by doing
+    gethostname followed by gethostbyname. This can result in it using the wrong
+    IP for the network you're actually going to be using, meaning that other
+    B2s - and TashRouter - won't know where to send frames back to. To work
+    around this, TashRouter can memorize the last IP address it saw a frame from
+    for each MAC address, then use that instead of the IP contained inside that
+    MAC address. Note that this probably won't work if there's more than one B2
+    on the network - they'll be able to talk to TashRouter, but not each other.'''
   DEFAULT_UDP_PORT = 6066
   SELECT_TIMEOUT = 0.25
   B2_TUNNEL_MAC_PREFIX = b'B2'
