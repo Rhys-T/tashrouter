@@ -5,20 +5,21 @@ from . import EtherTalkPort
 class B2UdpTunnelPort(EtherTalkPort):
   DEFAULT_UDP_PORT = 6066
   SELECT_TIMEOUT = 0.25
-  B2_TUNNEL_LOOPBACK_MAC = b'B2\x7f\x00\x00\x01' # 'B':'2':127.0.0.1
-  def __init__(self, intf_address=None, udp_port=DEFAULT_UDP_PORT, loopback_hack=False, **kwargs):
+  B2_TUNNEL_MAC_PREFIX = b'B2'
+  B2_TUNNEL_LOOPBACK_MAC = B2_TUNNEL_MAC_PREFIX + b'\x7f\x00\x00\x01' # 'B':'2':127.0.0.1
+  def __init__(self, intf_address=None, udp_port=DEFAULT_UDP_PORT, remap_addresses_hack=False, **kwargs):
     if intf_address is None:
       with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as fakeSocket:
         fakeSocket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         fakeSocket.connect(('<broadcast>', 9999))
         intf_address = fakeSocket.getsockname()[0]
-    hw_addr = b'B2' + socket.inet_aton(intf_address)
+    hw_addr = self.B2_TUNNEL_MAC_PREFIX + socket.inet_aton(intf_address)
     super().__init__(hw_addr=hw_addr, **kwargs)
     self._intf_address = intf_address
     self._udp_port = udp_port
-    self._loopback_hack = loopback_hack
-    if loopback_hack:
-      self._loopback_real_address = None
+    self._remap_addresses_hack = remap_addresses_hack
+    if remap_addresses_hack:
+      self._real_addresses = {}
     self._tunnel_thread = None
     self._tunnel_started_event = Event()
     self._tunnel_stopped_event = Event()
@@ -54,11 +55,12 @@ class B2UdpTunnelPort(EtherTalkPort):
       rlist, _, _ = select.select((self._socket,), (), (), self.SELECT_TIMEOUT)
       if self._socket not in rlist: continue
       data, sender_addr = self._socket.recvfrom(65535)
-      if self._loopback_hack and data[6:12] == self.B2_TUNNEL_LOOPBACK_MAC:
+      if self._remap_addresses_hack and data[6:8] == self.B2_TUNNEL_MAC_PREFIX:
+        ip = socket.inet_ntoa(data[8:12])
         real_addr = sender_addr[0]
-        if self._loopback_real_address is not None and self._loopback_real_address != real_addr:
-          logging.warning("%s replacing real address for loopback hack: %s -> %s", str(self), self._loopback_real_address, real_addr)
-        self._loopback_real_address = sender_addr[0]
+        if ip in self._real_addresses and self._real_addresses[ip] != real_addr:
+          logging.warning("%s replacing real address for %s: %s -> %s", str(self), data[6:12].hex(':'), self._real_addresses[ip], real_addr)
+        self._real_addresses[ip] = sender_addr[0]
       self.inbound_frame(data)
     self._tunnel_stopped_event.set()
   
@@ -66,14 +68,12 @@ class B2UdpTunnelPort(EtherTalkPort):
     dest = frame_data[0:6]
     if dest == self.ELAP_BROADCAST_ADDR or dest in self.ELAP_MULTICAST_ADDRS:
       ip = '255.255.255.255'
-    elif dest[0:2] == b'B2':
+    elif dest[0:2] == self.B2_TUNNEL_MAC_PREFIX:
       ip = socket.inet_ntoa(dest[2:6])
-      if ip == '127.0.0.1':
-        if self._loopback_hack and self._loopback_real_address is not None:
-          ip = self._loopback_real_address
-        else:
-          logging.warning("%s couldn't send frame to %s: Basilisk II is using loopback IP for fake MAC", str(self), dest.hex(':'))
-          return
+      if self._remap_addresses_hack and ip in self._real_addresses:
+        ip = self._real_addresses[ip]
+      elif ip == '127.0.0.1':
+        logging.warning("%s probably can't send frame to %s: Basilisk II is using loopback IP for fake MAC", str(self), dest.hex(':'))
     else:
       logging.warning("%s couldn't send frame to %s: bad tunnel MAC", str(self), dest.hex(":"))
       return
